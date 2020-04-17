@@ -171,6 +171,8 @@ services:
   # Mock services
   k2o:
     build: ./compose/k2o
+    depends_on:
+      - keycloak
     volumes:
       - ./compose/k2o:/app
     entrypoint: /start-reload.sh
@@ -186,6 +188,8 @@ services:
 
   c3n:
     build: ./compose/c3n
+    depends_on:
+      - keycloak
     volumes:
       - ./compose/c3n:/app
     entrypoint: /start-reload.sh
