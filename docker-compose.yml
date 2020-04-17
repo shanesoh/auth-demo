@@ -1,0 +1,198 @@
+version: '2.4'
+
+volumes:
+  kong_data: {}
+  keycloak_data: {}
+
+services:
+  traefik:
+    image: traefik:v2.2
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      default:
+        aliases:
+          # This allows the other containers to also reach the services through
+          # this public address (as opposed to using hostnames)
+          - kong.localhost
+          - keycloak.localhost
+          - k2o.localhost
+          - k2o.kong.localhost
+          - c3n.localhost
+          - c3n.kong.localhost
+
+  # Kong
+  kong-migrations:
+    image: kong:2.0.2-centos-oidc
+    command: kong migrations bootstrap
+    depends_on:
+      kong-db:
+        condition: service_healthy
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_DATABASE: ${KONG_PG_DATABASE:-kong}
+      KONG_PG_HOST: kong-db
+      KONG_PG_PASSWORD: ${KONG_PG_PASSWORD:-kong}
+      KONG_PG_USER: ${KONG_PG_USER:-kong}
+    restart: on-failure
+
+  kong-migrations-up:
+    image: kong:2.0.2-centos-oidc
+    command: kong migrations up && kong migrations finish
+    depends_on:
+      kong-db:
+        condition: service_healthy
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_DATABASE: ${KONG_PG_DATABASE:-kong}
+      KONG_PG_HOST: kong-db
+      KONG_PG_PASSWORD: ${KONG_PG_PASSWORD:-kong}
+      KONG_PG_USER: ${KONG_PG_USER:-kong}
+    restart: on-failure
+
+  kong:
+    build: ./compose/kong
+    image: kong:2.0.2-centos-oidc
+    user: "${KONG_USER:-kong}"
+    depends_on:
+      kong-db:
+        condition: service_healthy
+    environment:
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: '0.0.0.0:8001'
+      KONG_CASSANDRA_CONTACT_POINTS: kong-db
+      KONG_DATABASE: postgres
+      KONG_PG_DATABASE: ${KONG_PG_DATABASE:-kong}
+      KONG_PG_HOST: kong-db
+      KONG_PG_PASSWORD: ${KONG_PG_PASSWORD:-kong}
+      KONG_PG_USER: ${KONG_PG_USER:-kong}
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_PLUGINS: oidc
+    ports:
+      - "8001:8001/tcp"
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    restart: on-failure
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.kong.rule=HostRegexp(`kong.localhost`, `{subdomain:[a-z0-9]+}.kong.localhost`)"
+      - "traefik.http.routers.kong.tls=true"
+      - "traefik.http.routers.kong.tls.domains[0].main=kong.localhost"
+      - "traefik.http.routers.kong.entrypoints=websecure"
+      - "traefik.http.services.kong.loadbalancer.server.port=8000"
+
+  kong-db:
+    image: postgres:9.5
+    environment:
+      POSTGRES_DB: ${KONG_PG_DATABASE:-kong}
+      POSTGRES_PASSWORD: ${KONG_PG_PASSWORD:-kong}
+      POSTGRES_USER: ${KONG_PG_USER:-kong}
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${KONG_PG_USER:-kong}"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+    restart: on-failure
+    stdin_open: true
+    tty: true
+    volumes:
+      - kong_data:/var/lib/postgresql/data
+
+  konga:
+    image: pantsel/konga:0.14.7
+    ports:
+      - "1337:1337"
+    environment:
+      NO_AUTH: "true"
+
+  deck:
+    # To declaratively configure Kong
+    image: hbagdi/deck
+    depends_on:
+      kong-db:
+        condition: service_healthy
+    volumes:
+      - ./compose/kong:/home/deckuser
+    # NOTE: This is a quick hack because depends_on: kong is not reliable as the service is expected to go up and down during migration
+    # So we just sleep before trying to configure Kong
+    entrypoint: /bin/sh
+    command: -c "sleep 60 && deck --kong-addr http://kong:8001 sync -s /home/deckuser/kong.yml"
+
+  # Keycloak
+  keycloak-db:
+    image: postgres:9.6
+    volumes: 
+      - keycloak_data:/var/lib/postresql/data
+    environment:
+      POSTGRES_DB:       keycloak
+      POSTGRES_USER:     keycloak
+      POSTGRES_PASSWORD: password
+
+  keycloak:
+    image: jboss/keycloak:9.0.3
+    depends_on:
+      - keycloak-db
+    environment:
+      DB_VENDOR:   POSTGRES
+      DB_ADDR:     keycloak-db
+      DB_PORT:     5432
+      DB_DATABASE: keycloak
+      DB_USER:     keycloak
+      DB_PASSWORD: password
+      KEYCLOAK_USER:     admin
+      KEYCLOAK_PASSWORD: admin
+      KEYCLOAK_IMPORT: /tmp/realm.json -Dkeycloak.profile.feature.upload_scripts=enabled
+    volumes:
+      - ./compose/keycloak/realm.json:/tmp/realm.json
+    labels:
+      - "traefik.enable=true"
+      - "traefik.tcp.routers.keycloak.rule=HostSNI(`keycloak.localhost`)"
+      - "traefik.tcp.routers.keycloak.tls.passthrough=true"
+      - "traefik.tcp.routers.keycloak.entrypoints=websecure"
+      - "traefik.tcp.services.keycloak.loadbalancer.server.port=8443"
+
+  # Mock services
+  k2o:
+    build: ./compose/k2o
+    volumes:
+      - ./compose/k2o:/app
+    entrypoint: /start-reload.sh
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.k2o.rule=Host(`k2o.localhost`)"
+      - "traefik.http.routers.k2o.tls=true"
+      - "traefik.http.routers.k2o.tls.domains[0].main=k2o.localhost"
+      - "traefik.http.routers.k2o.entrypoints=websecure"
+      - "traefik.http.services.k2o.loadbalancer.server.port=80"
+    environment:
+      ISSUER_ENDPOINT: "https://keycloak.localhost/auth/realms/auth-demo"
+
+  c3n:
+    build: ./compose/c3n
+    volumes:
+      - ./compose/c3n:/app
+    entrypoint: /start-reload.sh
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.c3n.rule=Host(`c3n.localhost`)"
+      - "traefik.http.routers.c3n.tls=true"
+      - "traefik.http.routers.c3n.tls.domains[0].main=c3n.localhost"
+      - "traefik.http.routers.c3n.entrypoints=websecure"
+      - "traefik.http.services.c3n.loadbalancer.server.port=80"

@@ -1,0 +1,2 @@
+fastapi==0.47.1  # Ensure fastapi is up-to-date
+faker
