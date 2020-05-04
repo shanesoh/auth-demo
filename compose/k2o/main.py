@@ -1,7 +1,9 @@
 from faker import Faker
 from fastapi import FastAPI, Header, HTTPException
 import os
+import random
 import requests
+import schemas
 import time
 import jwt
 import logging
@@ -11,10 +13,37 @@ app = FastAPI(
     docs_url="/"
 )
 
-faker = Faker()
-profiles = [faker.profile() for _ in range(10)]
-public_key = []
 
+users_db = []
+profiles_db = {}
+
+@app.on_event("startup")
+def bootstrap_mock_data():
+    faker = Faker()
+
+    # Create mock users
+    for i in range(5):
+        user = schemas.User(username=f"user{i}",
+                            name=faker.name())
+        users_db.append(user)
+
+    # Create mock profiles
+    for i in range(10):
+        profile = schemas.Profile(profile_id=i,
+                                  owner=random.choice(users_db),
+                                  bio=schemas.ProfileBio(name=faker.name(),
+                                                         address=faker.address(),
+                                                         company=faker.company()),
+                                  contact_details=schemas.ProfileContactDetails(email=faker.email(),
+                                                                                phone_number=faker.phone_number()),
+                                  technical_details=schemas.ProfileTechnicalDetails(msisdn=faker.msisdn(),
+                                                                                    user_agent=faker.user_agent()),
+                                  comments=schemas.ProfileComments(bio_comments=faker.paragraph(),
+                                                                   general_comments=faker.paragraph())
+                                  )
+        profiles_db[i] = profile
+
+public_key = []
 
 @app.on_event("startup")
 def retrieve_public_key():
@@ -32,34 +61,62 @@ def retrieve_public_key():
             time.sleep(5)
 
 
-@app.get("/profiles")
-def get_profiles():
-    """Get all profiles.
+@app.get("/whoami")
+def whoami(x_access_token: str = Header(None),
+           authorization: str = Header(None)):
+    if authorization:
+        token = authorization.split(' ')[1]
+    else:
+        token = x_access_token
+    claims = jwt.decode(token, public_key[0], audience="account")
+    logging.info(f"Decoded JWT: {claims}")
 
-    This is a simple "hello world" endpoint that does not rely on external API calls.
+    return f"Hello {claims.get('preferred_username')}"
+
+
+@app.get("/profile/{profile_id}")
+def get_profiles(profile_id: int, x_access_token: str = Header(None),
+                 authorization: str = Header(None)):
+    """Retrieve a profile.
+
+    Depending on your privileges, you may only see part of a profile.
     """
-    return profiles
+    if authorization:
+        token = authorization.split(' ')[1]
+    else:
+        token = x_access_token
+    logging.info(token)
+    claims = jwt.decode(token, public_key[0], audience="account")
+    logging.info(f"Decoded JWT: {claims}")
+
+    profile = profiles_db.get(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return profile
 
 
 @app.post("/lookupSsn")
-def lookup_ssn(ssn: int, x_access_token: str = Header(None)):
+def lookup_ssn(ssn: int, x_access_token: str = Header(None),
+               authorization: str = Header(None)):
     """Lookup in c3n for additional data attributed to a ssn
 
     This API relies on an external API call to c3n. The user's access token is passed to k2o via kong, k2o then uses
     that access token to call c3n (also via kong).
     """
-    logging.info(f"X-Access-Token: {x_access_token}")
+    if authorization:
+        token = authorization.split(' ')[1]
+    elif x_access_token:
+        token = x_access_token
+    else:
+        raise HTTPException(status_code=403, detail="No access token. Try accessing via Kong at k2o.kong.localhost.")
 
     if public_key == []:
         raise HTTPException(status_code=401, detail="Missing public key")
 
-    if not x_access_token:
-        raise HTTPException(status_code=403, detail="No access token. Try accessing via Kong at k2o.kong.localhost.")
-
-    claims = jwt.decode(x_access_token, public_key[0])
+    claims = jwt.decode(token, public_key[0])
     logging.info(f"Decoded JWT: {claims}")
     # TODO: Check scope before posting
     r = requests.post(f"https://c3n.kong.localhost/queryAddress?ssn={ssn}",
-                      headers={"Authorization": f"Bearer {x_access_token}"},
+                      headers={"Authorization": f"Bearer {token}"},
                       verify=False)
     return r.json()

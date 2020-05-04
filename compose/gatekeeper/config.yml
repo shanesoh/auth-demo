@@ -1,0 +1,23 @@
+client-id: k2o-gk
+discovery-url: https://keycloak.localhost/auth/realms/auth-demo
+encryption-key: AgXa7xRcoClDEU0ZDSH4X0XhL5Qy2Z2j
+
+# Turn on debug
+verbose: true
+
+enable-refresh-tokens: true
+
+enable-self-signed-tls: true
+self-signed-tls-hostnames:
+    - k2o-gk.localhost
+listen: :443
+redirection-url: https://k2o-gk.localhost
+upstream-url: http://k2o-gk
+
+enable-default-deny: true
+resources:
+- uri: /profile/*
+  methods:
+  - GET
+  roles:
+  - k2o_owner

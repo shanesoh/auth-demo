@@ -161,6 +161,8 @@ services:
       KEYCLOAK_IMPORT: /tmp/realm.json -Dkeycloak.profile.feature.upload_scripts=enabled
     volumes:
       - ./compose/keycloak/realm.json:/tmp/realm.json
+      # To be automatically stored in Java keystore for Keycloak to use
+      - ./compose/keycloak/https/:/etc/x509/https
     labels:
       - "traefik.enable=true"
       - "traefik.tcp.routers.keycloak.rule=HostSNI(`keycloak.localhost`)"
@@ -200,3 +202,36 @@ services:
       - "traefik.http.routers.c3n.tls.domains[0].main=c3n.localhost"
       - "traefik.http.routers.c3n.entrypoints=websecure"
       - "traefik.http.services.c3n.loadbalancer.server.port=80"
+
+  gatekeeper:
+    image: alpine:3.8
+    container_name: gatekeeper-k2o
+    depends_on:
+      - keycloak
+    volumes:
+      - ./compose/gatekeeper/setup.sh:/gatekeeper/setup.sh:ro
+      - ./compose/gatekeeper/start.sh:/gatekeeper/start.sh:ro
+      - ./compose/gatekeeper/config.yml:/gatekeeper/config.yml:ro
+      - ./compose/keycloak/https/tls.crt:/usr/local/share/ca-certificates/tls.crt:ro
+    entrypoint: /gatekeeper/start.sh
+    environment:
+      KEYCLOAK_USER: admin
+      KEYCLOAK_PASSWORD: admin
+      KEYCLOAK_REALM: auth-demo
+      GATEKEEPER_CLIENT_ID: k2o-gk
+    labels:
+      - "traefik.enable=true"
+      - "traefik.tcp.routers.kong.rule=HostSNI(`k2o-gk.localhost`)"
+      - "traefik.tcp.routers.kong.tls.passthrough=true"
+      - "traefik.tcp.routers.kong.entrypoints=websecure"
+      - "traefik.tcp.services.kong.loadbalancer.server.port=443"
+
+  k2o-gk:
+    build: ./compose/k2o
+    depends_on:
+      - keycloak
+    volumes:
+      - ./compose/k2o:/app
+    entrypoint: /start-reload.sh
+    environment:
+      ISSUER_ENDPOINT: "https://keycloak.localhost/auth/realms/auth-demo"
