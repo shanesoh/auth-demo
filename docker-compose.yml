@@ -171,6 +171,18 @@ services:
       - "traefik.tcp.services.keycloak.loadbalancer.server.port=8443"
 
   # Mock services
+  k2o-opa:
+    image: openpolicyagent/opa:0.19.2-rootless
+    ports:
+      - 8181:8181
+    command:
+      - "run"
+      - "--server"
+      - "--log-level=debug"
+      - "api_authz.rego"
+    volumes:
+      - ./compose/k2o/policy/api_authz.rego:/api_authz.rego 
+    
   k2o:
     build: ./compose/k2o
     depends_on:
@@ -187,6 +199,8 @@ services:
       - "traefik.http.services.k2o.loadbalancer.server.port=80"
     environment:
       ISSUER_ENDPOINT: "https://keycloak.localhost/auth/realms/auth-demo"
+      OPA_ADDR: "http://k2o-opa:8181"
+      POLICY_PATH: "/v1/data/httpapi/authz"
 
   c3n:
     build: ./compose/c3n
