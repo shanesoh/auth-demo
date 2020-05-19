@@ -2,14 +2,21 @@ package httpapi.authz
 
 default allow = false
 
+# Only allow non-admin users to whoami
 allow {
   input.method == "GET"
   input.path = ["whoami"]
-  contains_element(token.payload.realm_access.roles, "k2o_owner")
+  token.payload.preferred_username != "admin"
+}
+
+# By default endpoints are blocked. Explicitly allow following method+endpoint
+allow {
+  input.method == "POST"
+  contains_element(input.path, "lookupSsn")
 }
 
 # Helper to get the token payload.
-token = {"payload": payload} {
+token = {"raw": input.token, "payload": payload} {
   [header, payload, signature] := io.jwt.decode(input.token)
 }
 

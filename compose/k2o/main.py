@@ -1,11 +1,10 @@
 from faker import Faker
-from fastapi import FastAPI, Header, HTTPException, Depends, Request
+from fastapi import FastAPI, Header, Path, Query, HTTPException, Depends, Request
 import os
 import random
 import requests
 import schemas
 import time
-import jwt
 import logging
 
 app = FastAPI(
@@ -69,20 +68,6 @@ def retrieve_public_key():
             time.sleep(5)
 
 
-async def verify_decode_token(x_access_token: str = Header(None), authorization: str = Header(None)):
-    if authorization:
-        token = authorization.split(' ')[1]
-    elif x_access_token:
-        token = x_access_token
-    else:
-        raise HTTPException(status_code=403, detail="No access token.")
-
-    logging.info(f"Access Token: {token}")
-    claims = jwt.decode(token, public_key[0], audience="kong-k2o")
-    logging.info(f"Decoded JWT: {claims}")
-    return {"raw": token, "claims": claims}
-
-
 async def check_opa_authz(request: Request, x_access_token: str = Header(None), authorization: str = Header(None)):
     if authorization:
         token = authorization.split(' ')[1]
@@ -92,28 +77,34 @@ async def check_opa_authz(request: Request, x_access_token: str = Header(None), 
         raise HTTPException(status_code=403, detail="No access token.")
 
     try:
-        data = {"input":
-                {"method": request.method,
-                 "path": request.url.path.split('/')[1:],
-                 "token": token}
-                }
-        r = requests.post(opa_url + policy_path, json=data)
+        data = {
+            "input": {
+                "method": request.method,
+                "path": request.url.path.split('/')[1:],
+                "token": token
+            }
+        }
+        resp = requests.post(opa_url + policy_path, json=data)
     except Exception as err:
         logging.error(err)
         raise HTTPException(status_code=500, detail=err)
 
-    if r.json()["result"].get("allow", False) is not True:
+    if resp.json()["result"].get("allow", False) is not True:
         logging.error("OPA denied access")
         raise HTTPException(status_code=401, detail="Forbidden!")
+    else:
+        return resp
 
 
-@app.get("/whoami", dependencies=[Depends(check_opa_authz)])
-def whoami(token: dict = Depends(verify_decode_token)):
-    return f"Hello {token['claims'].get('preferred_username')}"
+@app.get("/whoami")
+def whoami(resp=Depends(check_opa_authz)):
+    """Gives you your username as long as you're not "admin"
+    """
+    return f"Hello {resp.json()['result']['token']['payload']['preferred_username']}"
 
 
 @app.get("/profile/{profile_id}")
-def get_profiles(profile_id: int, token: dict = Depends(verify_decode_token)):
+def get_profiles(profile_id: int = Path(..., example=1)):
     """Retrieve a profile.
     """
     profile = profiles_db.get(profile_id)
@@ -123,14 +114,16 @@ def get_profiles(profile_id: int, token: dict = Depends(verify_decode_token)):
 
 
 @app.post("/lookupSsn")
-def lookup_ssn(ssn: int, token: dict = Depends(verify_decode_token)):
+def lookup_ssn(ssn: int = Query(..., example=12345), resp=Depends(check_opa_authz)):
     """Lookup in c3n for additional data attributed to a ssn
 
     This API relies on an external API call to c3n. The user's access token is passed to k2o via kong, k2o then uses
     that access token to call c3n (also via kong).
+
+    NOTE: Currently c3n does not check for access token so passing it would seem redundant
     """
-    # TODO: Check scope before posting
+    token = resp.json()['result']['token']['raw']
     r = requests.post(f"https://c3n.kong.localhost/queryAddress?ssn={ssn}",
-                      headers={"Authorization": f"Bearer {token['raw']}"},
+                      headers={"Authorization": f"Bearer {token}"},
                       verify=False)
     return r.json()
