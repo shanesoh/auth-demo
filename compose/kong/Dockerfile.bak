@@ -1,9 +1,0 @@
-FROM kong:2.0.2-centos
-
-LABEL description="Centos + Kong + kong-oidc plugin"
-
-USER root
-RUN yum install -y git unzip && yum clean all
-
-USER kong
-RUN luarocks install --local kong-enhanced-oidc
