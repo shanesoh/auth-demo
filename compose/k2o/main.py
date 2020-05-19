@@ -15,8 +15,12 @@ app = FastAPI(
 opa_url = os.environ.get("OPA_ADDR", "http://localhost:8181")
 policy_path = os.environ.get("POLICY_PATH", "/v1/data/authz")
 
+# To be populated with mock data in bootstrap startup function
 users_db = []
 profiles_db = {}
+
+# Mutable data structure to store public key from Keycloak
+public_key = []
 
 
 @app.on_event("startup")
@@ -46,9 +50,6 @@ def bootstrap_mock_data():
         profiles_db[i] = profile
 
 
-public_key = []
-
-
 @app.on_event("startup")
 def retrieve_public_key():
     """Retrieve public key from auth server (i.e. Keycloak) needed to validate JWT.
@@ -69,6 +70,11 @@ def retrieve_public_key():
 
 
 async def check_opa_authz(request: Request, x_access_token: str = Header(None), authorization: str = Header(None)):
+    """Obtains access token (via "Authorization: Bearer <token>" or "X-Access-Token" headers) and passes it to
+    OPA for authz policy evaluation
+
+    To be used as a dependency for endpoints that require authorization.
+    """
     if authorization:
         token = authorization.split(' ')[1]
     elif x_access_token:
