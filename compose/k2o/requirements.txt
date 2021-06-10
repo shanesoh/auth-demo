@@ -1,4 +1,4 @@
-fastapi==0.54.2  # Ensure fastapi is up-to-date
+fastapi==0.65.2  # Ensure fastapi is up-to-date
 faker
 requests
 pyjwt[crypto]
